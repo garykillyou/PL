@@ -8,6 +8,8 @@
 using namespace std;
 
 static bool uDebug = false;
+static bool uDebug2 = false;
+static bool uDebug3 = false;
 
 // 用於標示token型態
 enum TYPE {
@@ -17,11 +19,25 @@ enum TYPE {
   //   7    8  9      10    11     12      13
 };
 
-enum ERROR {
+enum ERROR_READ {
   //                                  41                                       42
   ERROR_UNEXPECTED_TOKEN_ATOM_LEFT_PAREN = 41, ERROR_UNEXPECTED_TOKEN_RIGHT_PAREN,
   ERROR_NO_CLOSING_QUOTE, ERROR_NO_MORE_INPUT
   //                  43                   44
+};
+
+enum ERROR_EVAL
+{
+  ERROR_UNBOUND_SYMBOY = 51,
+  ERROR_NON_LIST,
+  ERROR_ATTEMPT_TO_APPLY_NON_FUNCTION,
+  ERROR_ATTEMPT_TO_APPLY_NON_FUNCTION2,
+  ERROR_LEVEL_OF_CLEAN_ENVIRONMENT, ERROR_LEVEL_OF_DEFINE, ERROR_LEVEL_OF_EXIT,
+  ERROR_INCORRECT_NUMBER_OF_ARGUMENTS,
+  ERROR_DEFINE_FORMAT, ERROR_COND_FORMAT, ERROR_LAMBDA_FORMAT, ERROR_LET_FORMAT,
+  ERROR_XXX_WITH_INCORRECT_ARGUMENT_TYPE,
+  ERROR_DIVISION_BY_ZERO,
+  ERROR_NO_RETURN_VALUE
 };
 
 struct Token_Type
@@ -42,6 +58,28 @@ struct PL_Tree
   PL_Tree *parent;
 };
 
+struct Defined_Symbol
+{
+  string original_symbol;
+  int type;
+  PL_Tree *translate_PL_Tree;
+};
+
+struct Defined_Function
+{
+  string functionName;
+  vector<string> functionArgument;
+  int numOfArgument;
+  PL_Tree *translate_PL_Tree;
+};
+
+struct Lambda_Function
+{
+  int lambdaArgumentNum;
+  vector<string> lambdaArgumentName;
+  PL_Tree *lambda_PL_Tree;
+};
+
 static int uLine;
 static int uColume;
 static int uTokenLine;
@@ -58,6 +96,18 @@ static char uLastChar;
 static bool uEOF;
 static bool uExit;
 static Token_Type uErrorToken;
+static PL_Tree *uErrorTree;
+static vector<Defined_Symbol> uDefined_List;
+static vector<Defined_Function> uDefined_Function_List;
+static vector<string> uInternalFunction;
+static int uLambdaArgumentNum;
+static vector<string> uLambdaArgumentName;
+static PL_Tree * uLambda_PL_Tree;
+static int uLet_Defined_Num;
+static bool uLambdaUse;
+static vector<Lambda_Function> uLambda_Function_List;
+
+PL_Tree *Eval( PL_Tree *originalRoot, int level, bool &ifQuote ) ;
 
 void GetLine() {
   char temp;
@@ -530,7 +580,8 @@ void ReadSExp( PL_Tree *nextNode, string unusedToken ) {
       nextNode->isAtomString.original = "()";
       nextNode->isAtomString.type = NIL;
       nextNode->isAtomString.changed = "nil";
-      nextNode->isAtomString.tokenColume = uColume;
+      nextNode->isAtomString.tokenLine = tempTest.tokenLine;
+      nextNode->isAtomString.tokenColume = tempTest.tokenColume;
       return;
     } // end if ...
     else {
@@ -590,6 +641,7 @@ void ReadSExp( PL_Tree *nextNode, string unusedToken ) {
   } // end if ...
 
   // end 進階節點 ===================================================
+
   // 基本節點 =======================================================
 
   if ( tempTest.type >= INT && tempTest.type < SYMBOL ) {
@@ -607,7 +659,7 @@ void ReadSExp( PL_Tree *nextNode, string unusedToken ) {
       throw ERROR_NO_CLOSING_QUOTE; // 沒有雙引號結尾的錯誤
     } // end if ...
     else {
-      nextNode->type = ATOM;
+      nextNode->type = SYMBOL;
       nextNode->isAtomString = tempTest;
       nextNode->left = NULL;
       nextNode->right = NULL;
@@ -630,7 +682,8 @@ void ReadSExp( PL_Tree *nextNode, string unusedToken ) {
       nextNode->isAtomString.original = "()";
       nextNode->isAtomString.type = NIL;
       nextNode->isAtomString.changed = "nil";
-      nextNode->isAtomString.tokenColume = uColume;
+      nextNode->isAtomString.tokenLine = tempTest.tokenLine;
+      nextNode->isAtomString.tokenColume = tempTest.tokenColume;
       return;
     } // end if ...
     else if ( tempTest.type == DOT ) {
@@ -719,7 +772,9 @@ void ReadSExp( PL_Tree *nextNode, string unusedToken ) {
 
 } // ReadSExp()
 
-void PrintSExp( PL_Tree *root, int spaceNum ) {
+void PrintSExp( PL_Tree *root, int spaceNum, bool ifQuote ) {
+
+  if ( root == NULL ) return;
 
   if ( root->type != S_EXP && root->type != LS_EXP ) {
     if ( root->isAtomString.type == LEFT_PAREN ) {
@@ -734,10 +789,13 @@ void PrintSExp( PL_Tree *root, int spaceNum ) {
       } // end for ...
     } // end else if ...
     else {
-      cout << root->isAtomString.changed;
+      if ( root->isAtomString.type == SYMBOL && !ifQuote ) {
+        cout << "#<procedure " << root->isAtomString.changed << ">";
+      } // end if
+      else cout << root->isAtomString.changed;
     } // end else if ...
 
-    if ( root->left != NULL ) PrintSExp( root->left, spaceNum );
+    if ( root->left != NULL ) PrintSExp( root->left, spaceNum, ifQuote );
 
     if ( root->right != NULL ) {
       if ( root->right->type != S_EXP && root->right->type != LS_EXP ) {
@@ -754,7 +812,7 @@ void PrintSExp( PL_Tree *root, int spaceNum ) {
         } // end if ...
       } // end if ...
 
-      if ( root->right->isAtomString.type != NIL ) PrintSExp( root->right, spaceNum );
+      if ( root->right->isAtomString.type != NIL ) PrintSExp( root->right, spaceNum, ifQuote );
     } // end if ...
 
 
@@ -775,7 +833,7 @@ void PrintSExp( PL_Tree *root, int spaceNum ) {
       cout << " ";
     } // end for ...
 
-    if ( root->left != NULL ) PrintSExp( root->left, spaceNum );
+    if ( root->left != NULL ) PrintSExp( root->left, spaceNum, ifQuote );
     if ( root->right != NULL ) {
       if ( root->right->type != S_EXP && root->right->type != LS_EXP ) {
         if ( root->right->isAtomString.type != NIL ) {
@@ -791,13 +849,1452 @@ void PrintSExp( PL_Tree *root, int spaceNum ) {
         } // end if ...
       } // end if ...
 
-      if ( root->right->isAtomString.type != NIL ) PrintSExp( root->right, spaceNum );
+      if ( root->right->isAtomString.type != NIL ) PrintSExp( root->right, spaceNum, ifQuote );
     } // end if ...
 
     return;
   } // end else ...
 } // PrintSExp()
 
+bool IsBoundOrInternalFunction( string symbol, int &tempLocal, string &internalFunction,
+                                int level, bool &ifQuote ) {
+
+  for ( int i = 0 ; i < uInternalFunction.size() ; i++ ) {
+    if ( symbol == uInternalFunction[i] ) {
+      tempLocal = -1;
+      internalFunction = uInternalFunction[i];
+      return true;
+    } // end if ...
+  } // end for ...
+
+  for ( int i = 0 ; i < uDefined_List.size() ; i++ ) {
+    if ( symbol == uDefined_List[i].original_symbol ) {
+      tempLocal = i;
+      if ( uDefined_List[i].type == 1 ) {
+        if ( uDefined_List[i].translate_PL_Tree->right == NULL &&
+             uDefined_List[i].translate_PL_Tree->left == NULL ) {
+          IsBoundOrInternalFunction( uDefined_List[i].translate_PL_Tree->isAtomString.changed,
+                                     tempLocal, internalFunction, level, ifQuote );
+        } // end if ...
+        else {
+          PL_Tree *tempPLT = Eval( uDefined_List[i].translate_PL_Tree, level, ifQuote );
+          if ( tempPLT != NULL ) {
+            IsBoundOrInternalFunction( tempPLT->isAtomString.changed,
+                                       tempLocal, internalFunction, level, ifQuote );
+
+          } // end if ...
+        } // end else ...
+      } // end if ...
+
+      return true;
+    } // end if ...
+  } // end for ...
+
+  return false;
+} // IsBoundOrInternalFunction()
+
+void FunctionLocal( string functionName, int &tempLocal ) {
+
+  for ( int i = 0; i < uDefined_Function_List.size() ; i++ ) {
+    if ( functionName == uDefined_Function_List[i].functionName ) {
+      tempLocal = i;
+
+      return;
+    } // end if ...
+  } // end for ...
+
+  return;
+} // FunctionLocal()
+
+void BoundLocal( string symbol, int &tempLocal ) {
+
+  for ( int i = 0 ; i < uDefined_List.size() ; i++ ) {
+    if ( symbol == uDefined_List[i].original_symbol ) {
+      tempLocal = i;
+
+      return;
+    } // end if ...
+  } // end for ...
+
+  return;
+} // BoundLocal()
+
+int HowManyArgument( PL_Tree *theFirstArgumentNode ) {
+
+  if ( theFirstArgumentNode->right != NULL ) {
+    return 1 + HowManyArgument( theFirstArgumentNode->right );
+  } // end if ...
+  else {
+    if ( theFirstArgumentNode->isAtomString.type == NIL ) return 0;
+    else return 1;
+  } // end else ...
+
+} // HowManyArgument()
+
+bool CheckTheNumOfFunctionCorrect( string functionName, int num ) {
+
+  if ( functionName == "quote" || functionName == "'" || functionName == "car" || functionName == "cdr" ||
+       functionName == "atom?" || functionName == "pair?" || functionName == "list?" ||
+       functionName == "null?" || functionName == "integer?" || functionName == "real?" ||
+       functionName == "number?" || functionName == "string?" || functionName == "boolean?" ||
+       functionName == "symbol?" || functionName == "not" ) {
+    if ( num == 1 ) return true;
+  } // end if ...
+  else if ( functionName == "cons" || functionName == "eqv?" || functionName == "equal?" ||
+            functionName == "define" ) {
+    if ( num == 2 ) return true;
+  } // end else if ...
+  else if ( functionName == "list" ) {
+    if ( num >= 0 ) return true;
+  } // end else if ...
+  else if ( functionName == "+" || functionName == "-" || functionName == "*" ||
+            functionName == "/" || functionName == "and" || functionName == "or" || functionName == ">" ||
+            functionName == ">=" || functionName == "<" || functionName == "<=" || functionName == "=" ||
+            functionName == "string-append" || functionName == "string>?" || functionName == "string<?" ||
+            functionName == "string=?" || functionName == "let" ) {
+    if ( num >= 2 ) return true;
+  } // end else if ...
+  else if ( functionName == "begin" || functionName == "cond" ) {
+    if ( num >= 1 ) return true;
+  } // end else if ...
+  else if ( functionName == "if" ) {
+    if ( num == 2 || num == 3 ) return true;
+  } // end else if ...
+  else if ( functionName == "clean-environment" || functionName == "exit" ) {
+    if ( num == 0 ) return true;
+  } // end else if ...
+  else if ( functionName == "lambda" ) {
+    if ( !uLambdaUse && num >= 2 ) return true;
+    else if ( uLambdaUse &&
+              num == uLambda_Function_List[uLambda_Function_List.size() - 1].lambdaArgumentNum )
+      return true;
+  } // end else if ...
+
+  return false;
+} // CheckTheNumOfFunctionCorrect()
+
+PL_Tree *ReturnASpecificTree( int type ) {
+
+  PL_Tree *tempRoot = new PL_Tree;
+  tempRoot->parent = NULL;
+  tempRoot->left = NULL;
+  tempRoot->right = NULL;
+  tempRoot->type = ATOM;
+
+  if ( type == NIL ) {
+    tempRoot->isAtomString.changed = "nil";
+    tempRoot->isAtomString.type = NIL;
+  } // end if ...
+  else if ( type == T ) {
+    tempRoot->isAtomString.changed = "#t";
+    tempRoot->isAtomString.type = T;
+  } // end else if ...
+  else if ( type == INT ) {
+    tempRoot->isAtomString.type = INT;
+  } // end else if ...
+  else if ( type == FLOAT ) {
+    tempRoot->isAtomString.type = FLOAT;
+  } // end else if ...
+  else if ( type == STRING ) {
+    tempRoot->isAtomString.type = STRING;
+  } // end else if ...
+  else if ( type == SYMBOL ) {
+    tempRoot->isAtomString.type = SYMBOL;
+  } // end else if ...
+
+  if ( uDebug2 ) cout << tempRoot->isAtomString.type << endl;
+  return tempRoot;
+} // ReturnASpecificTree()
+
+bool IsList( PL_Tree *root ) {
+
+  PL_Tree *temp = root;
+
+  if ( temp->type != LEFT_PAREN ) return false;
+  else {
+    while ( temp->right != NULL ) temp = temp->right;
+
+    if ( temp->type != LEFT_PAREN && temp->type != S_EXP && temp->type != LS_EXP &&
+         temp->isAtomString.type != NIL ) return false;
+  } // else ...
+
+  return true;
+} // IsList()
+
+PL_Tree *CopyTree( PL_Tree *originalPL_Tree ) {
+
+  int tempI;
+  Token_Type tempTT;
+  PL_Tree *copyPL_Tree;
+
+  if ( originalPL_Tree != NULL ) {
+    copyPL_Tree = new PL_Tree;
+    tempI = ( int ) originalPL_Tree->type;
+    copyPL_Tree->type = tempI;
+    tempTT = ( Token_Type ) originalPL_Tree->isAtomString;
+    copyPL_Tree->isAtomString = tempTT;
+    copyPL_Tree->parent = NULL;
+    copyPL_Tree->left = CopyTree( originalPL_Tree->left );
+    copyPL_Tree->right = CopyTree( originalPL_Tree->right );
+  } // end if ...
+  else {
+    copyPL_Tree = NULL;
+  } // end else ...
+
+  return copyPL_Tree;
+} // CopyTree()
+
+bool IsEqv( PL_Tree *one, PL_Tree *two ) {
+
+  if ( one == two ) return true;
+
+  if ( one->type != ATOM || two->type != ATOM ) return false;
+  else {
+    if ( one->isAtomString.type == STRING || two->isAtomString.type == STRING ) return false;
+    else if ( one->isAtomString.type != two->isAtomString.type ) return false;
+    else {
+      if ( one->isAtomString.changed != two->isAtomString.changed ) return false;
+    } // end else ...
+  } // end else ...
+
+  return true;
+} // IsEqv()
+
+void IsEqualContent( PL_Tree *one, PL_Tree *two ) {
+
+  if ( one == NULL && two == NULL ) return;
+
+  if ( one != NULL && two != NULL ) {
+    if ( one->type != two->type ) throw false;
+
+    if ( one->type == ATOM ) {
+      if ( one->isAtomString.changed != two->isAtomString.changed ) throw false;
+    } // end if ...
+
+    IsEqualContent( one->left, two->left );
+    IsEqualContent( one->right, two->right );
+
+  } // end if ...
+  else {
+    throw false;
+  } // end else ...
+
+  return;
+
+} // IsEqualContent()
+
+bool IsEqual( PL_Tree *one, PL_Tree *two ) {
+
+  try {
+
+    IsEqualContent( one, two );
+  }
+  catch ( bool YN ) {
+
+    return false;
+  } // end catch ...
+
+  return true;
+} // IsEqual()
+
+void CleanEnvironment() {
+
+  uDefined_List.clear();
+  uDefined_Function_List.clear();
+  /*
+  Defined_Symbol tempDS;
+  tempDS.original_symbol = "else";
+  tempDS.type = SYMBOL;
+  tempDS.translate_PL_Tree = ReturnASpecificTree( T );
+  uDefined_List.push_back( tempDS );
+  */
+
+} // CleanEnvironment()
+
+bool ReplaceExistedSymbol( string existedSymbol, PL_Tree *existedTree, PL_Tree *node ) {
+
+  if ( node == NULL ) return false;
+
+  if ( node->isAtomString.type == SYMBOL && node->isAtomString.changed == existedSymbol ) {
+    if ( uDebug2 ) cout << "L1033 : replace\n";
+    return true;
+  } // end if ...
+
+  if ( ReplaceExistedSymbol( existedSymbol, existedTree, node->left ) )
+    node->left = existedTree;
+  if ( ReplaceExistedSymbol( existedSymbol, existedTree, node->right ) )
+    node->right = existedTree;
+
+  return false;
+
+} // ReplaceExistedSymbol()
+
+bool ReplaceArgumentInFunction( vector<PL_Tree *> argumentList, int functionLocal, PL_Tree *node,
+                                int &argumentLocal ) {
+
+  if ( node == NULL ) return false;
+
+  if ( node->left != NULL && node->left->isAtomString.changed == "lambda" ) return false;
+
+  if ( node->isAtomString.type == SYMBOL ) {
+    for ( int i = 1; i < uDefined_Function_List[functionLocal].functionArgument.size() ; i++ ) {
+      if ( node->isAtomString.changed == uDefined_Function_List[functionLocal].functionArgument[i] ) {
+        argumentLocal = i;
+        return true;
+      } // end if ...
+    } // end for ...
+
+    return false;
+  } // end if ...
+
+  if ( ReplaceArgumentInFunction( argumentList, functionLocal, node->left, argumentLocal ) ) {
+    node->left = argumentList[argumentLocal];
+  } // end if ...
+
+  if ( ReplaceArgumentInFunction( argumentList, functionLocal, node->right, argumentLocal ) ) {
+    node->right = argumentList[argumentLocal];
+  } // end if ...
+
+  return false;
+} // ReplaceArgumentInFunction()
+
+bool ReplaceArgumentInLambda( vector<PL_Tree *> argumentList, PL_Tree *node, int &argumentLocal ) {
+
+  if ( node == NULL ) return false;
+
+  if ( node->isAtomString.type == SYMBOL ) {
+    for ( int i = 0; i < uLambda_Function_List[uLambda_Function_List.size() - 1].lambdaArgumentNum ;
+          i++ ) {
+      if ( node->isAtomString.changed ==
+           uLambda_Function_List[uLambda_Function_List.size() - 1].lambdaArgumentName[i] ) {
+        argumentLocal = i + 1;
+        return true;
+      } // end if ...
+    } // end for ...
+
+    return false;
+  } // end if ...
+
+  if ( ReplaceArgumentInLambda( argumentList, node->left, argumentLocal ) ) {
+    node->left = argumentList[argumentLocal];
+  } // end if ...
+
+  if ( ReplaceArgumentInLambda( argumentList, node->right, argumentLocal ) ) {
+    node->right = argumentList[argumentLocal];
+  } // end if ...
+
+  return false;
+} // ReplaceArgumentInLambda()
+
+int CheckDefineFirstArgument( PL_Tree *root, vector<string> &functionArgument ) {
+
+  PL_Tree *temp = root;
+  bool ifQuote = false;
+
+  int tempLocal = -2;
+  string internalFunction;
+
+  if ( temp->isAtomString.type == SYMBOL ) return 1;
+  else if ( temp->isAtomString.type != LEFT_PAREN ) {
+    if ( uDebug3 ) cout << "CheckDefineFirstArgument 1\n";
+    return -1;
+  } // end else if ...
+  else {
+    do {
+
+      if ( temp->left->isAtomString.type != SYMBOL ) {
+        if ( uDebug3 ) cout << "CheckDefineFirstArgument 2\n";
+        return -1;
+      } // end if ...
+      else {
+        /*
+        IsBoundOrInternalFunction( temp->left->isAtomString.changed, tempLocal, internalFunction,
+                                   0, ifQuote );
+        if ( tempLocal == -1 ) {
+          if ( uDebug3 ) cout << "CheckDefineFirstArgument 3\n";
+          return -1;
+        } // end if ...
+        else {
+          functionArgument.push_back( temp->left->isAtomString.changed );
+        } // end else ...
+        */
+        functionArgument.push_back( temp->left->isAtomString.changed );
+      } // end else ...
+
+      temp = temp->right;
+    } while ( temp != NULL && temp->isAtomString.type != NIL );
+
+  } // end else ...
+
+  return functionArgument.size();
+
+} // CheckDefineFirstArgument()
+
+void CheckLetDefineArgument( PL_Tree *root ) {
+
+  PL_Tree *temp = root;
+  int level = 2;
+  bool ifQuote = false;
+  Defined_Symbol tempDS;
+
+  int argumentNum = HowManyArgument( temp );
+
+  if ( argumentNum != 2 ) throw ERROR_LET_FORMAT;
+
+  if ( temp->isAtomString.type == LEFT_PAREN ) {
+    if ( temp->left->isAtomString.type != SYMBOL ) throw ERROR_LET_FORMAT;
+
+    tempDS.original_symbol = temp->left->isAtomString.changed;
+    tempDS.type = 1;
+    temp = temp->right;
+    // Eval( temp->left, level, ifQuote );
+    tempDS.translate_PL_Tree = Eval( temp->left, level, ifQuote );
+  } // end if ...
+  else throw ERROR_LET_FORMAT;
+
+  int tempLocal = -1;
+  for ( int i = 0; i < uLet_Defined_Num ; i++ ) {
+    if ( tempDS.original_symbol == uDefined_List[i].original_symbol ) tempLocal = i;
+  } // end for ...
+
+  if ( tempLocal > -1 ) {
+    uDefined_List.erase( uDefined_List.begin() + tempLocal );
+    uLet_Defined_Num--;
+  } // end if ...
+
+  uDefined_List.insert( uDefined_List.begin(), tempDS );
+  uLet_Defined_Num++;
+
+} // CheckLetDefineArgument()
+
+PL_Tree *Eval( PL_Tree *originalRoot, int level, bool &ifQuote ) {
+
+  int tempLocal = -2;
+  string internalFunction;
+  int argumentNum;
+  bool useDefinedFunction = false;
+
+  PL_Tree *otherArgument;
+  vector<PL_Tree *> otherArgumentList;
+  otherArgumentList.clear();
+
+  if ( originalRoot->isAtomString.type >= INT && originalRoot->isAtomString.type <= T ) {
+    if ( uDebug2 ) cout << "return a ATOM " << originalRoot->isAtomString.changed << endl;
+    return originalRoot;
+  } // end if ...
+  else if ( originalRoot->isAtomString.type == SYMBOL ) {
+
+    if ( !IsBoundOrInternalFunction( originalRoot->isAtomString.changed, tempLocal, internalFunction,
+                                     level, ifQuote ) ) {
+      uErrorToken = originalRoot->isAtomString;
+      throw ERROR_UNBOUND_SYMBOY;
+    } // end if ...
+    else {
+      if ( tempLocal == -1 ) {
+        otherArgument = ReturnASpecificTree( SYMBOL );
+        otherArgument->isAtomString.changed = internalFunction;
+        return otherArgument;
+      } // end if ...
+      else {
+        if ( uDefined_List[tempLocal].type == 1 )
+          return Eval( uDefined_List[tempLocal].translate_PL_Tree, level, ifQuote );
+        else if ( uDefined_List[tempLocal].type == 2 ) {
+          otherArgument = ReturnASpecificTree( SYMBOL );
+          otherArgument->isAtomString.changed = uDefined_List[tempLocal].original_symbol;
+          return otherArgument;
+        } // end else if ...
+      } // end else ...
+    } // end else ...
+  } // end else if ...
+  else if ( originalRoot->type == QUOTE ) {
+    argumentNum = HowManyArgument( originalRoot ) - 1;
+    if ( argumentNum == 0 ) {
+      otherArgument = originalRoot;
+      ifQuote = true;
+      return otherArgument->left;
+    } // end if ...
+    else {
+      uErrorToken.changed = internalFunction;
+      throw ERROR_INCORRECT_NUMBER_OF_ARGUMENTS;
+    } // end else ...
+  } // end else if ...
+  else {
+    if ( originalRoot->type == LEFT_PAREN ) {
+      if ( !IsList( originalRoot ) ) {
+        uErrorTree = originalRoot;
+        throw ERROR_NON_LIST;
+      } // end if ...
+      else if ( originalRoot->left->type == ATOM ) {
+        uErrorToken = originalRoot->left->isAtomString;
+        throw ERROR_ATTEMPT_TO_APPLY_NON_FUNCTION;
+      } // end else if ...
+      else if ( originalRoot->left->isAtomString.type == SYMBOL ) {
+        if ( IsBoundOrInternalFunction( originalRoot->left->isAtomString.changed, tempLocal,
+                                        internalFunction, level, ifQuote ) ) {
+          if ( tempLocal == -1 ) {
+            if ( level > 1 ) {
+              if ( internalFunction == "clean-environment" )
+                throw ERROR_LEVEL_OF_CLEAN_ENVIRONMENT;
+              else if ( internalFunction == "define" )
+                throw ERROR_LEVEL_OF_DEFINE;
+              else if ( internalFunction == "exit" )
+                throw ERROR_LEVEL_OF_EXIT;
+            } // end if ...
+
+            if ( internalFunction == "define" || internalFunction == "set!" ||
+                 internalFunction == "let" || internalFunction == "cond" ||
+                 internalFunction == "lambda" ) {
+              if ( internalFunction == "define" ) {
+                // ================================ define ================================
+                argumentNum = HowManyArgument( originalRoot ) - 1;
+                if ( !CheckTheNumOfFunctionCorrect( internalFunction, argumentNum ) ) {
+                  uErrorTree = originalRoot;
+                  if ( uDebug3 ) cout << "ERROR_DEFINE_FORMAT 1\n";
+                  throw ERROR_DEFINE_FORMAT;
+                } // end if ...
+
+                otherArgument = originalRoot->right;
+                int tempSwitch;
+                vector<string> functionArgument;
+                functionArgument.clear();
+                tempSwitch = CheckDefineFirstArgument( otherArgument->left, functionArgument );
+
+                if ( tempSwitch == -1 ) {
+                  uErrorTree = originalRoot;
+                  if ( uDebug3 ) cout << "ERROR_DEFINE_FORMAT 2\n";
+                  throw ERROR_DEFINE_FORMAT;
+                } // end if ...
+                else if ( tempSwitch == 1 ) {
+
+                  tempLocal = -2;
+                  if ( IsBoundOrInternalFunction( otherArgument->left->isAtomString.changed, tempLocal,
+                                                  internalFunction, level, ifQuote ) ) {
+                    if ( tempLocal == -1 ) {
+                      BoundLocal( otherArgument->left->isAtomString.changed, tempLocal );
+                      if ( tempLocal == -1 ) {
+                        uErrorTree = originalRoot;
+                        if ( uDebug3 ) cout << "ERROR_DEFINE_FORMAT 3\n";
+                        throw ERROR_DEFINE_FORMAT;
+                      } // end if ...
+                    } // end if ...
+                  } // end if ...
+
+                  Defined_Symbol tempDD;
+                  tempDD.original_symbol = otherArgument->left->isAtomString.changed;
+                  tempDD.type = 1;
+                  otherArgument = otherArgument->right;
+                  Eval( otherArgument->left, 2, ifQuote );
+                  if ( tempLocal >= 0 ) {
+                    ReplaceExistedSymbol( tempDD.original_symbol, uDefined_List[tempLocal].translate_PL_Tree,
+                                          otherArgument->left );
+                    tempDD.translate_PL_Tree = otherArgument->left;
+                    BoundLocal( tempDD.original_symbol, tempLocal );
+                    uDefined_List.erase( uDefined_List.begin() + tempLocal );
+                    uDefined_List.push_back( tempDD );
+                  } // end if ...
+                  else {
+                    tempDD.translate_PL_Tree = otherArgument->left;
+                    uDefined_List.push_back( tempDD );
+                  } // end else ...
+
+                  cout << tempDD.original_symbol << " defined";
+
+                } // end else if ...
+                else {
+                  otherArgument = otherArgument->right;
+                  Defined_Function tempDF;
+                  tempDF.functionName = functionArgument[0];
+                  tempDF.functionArgument = functionArgument;
+                  tempDF.numOfArgument = functionArgument.size() - 1;
+                  tempDF.translate_PL_Tree = otherArgument->left;
+
+                  tempLocal = -2;
+                  if ( IsBoundOrInternalFunction( tempDF.functionName, tempLocal,
+                                                  internalFunction, level, ifQuote ) ) {
+                    if ( tempLocal == -1 ) {
+                      BoundLocal( tempDF.functionName, tempLocal );
+                      if ( tempLocal == -1 ) {
+                        uErrorTree = originalRoot;
+                        if ( uDebug3 ) cout << "ERROR_DEFINE_FORMAT 4\n";
+                        throw ERROR_DEFINE_FORMAT;
+                      } // end if ...
+                    } // end if ...
+                  } // end if ...
+
+                  if ( tempLocal >= 0 ) {
+                    uDefined_List.erase( uDefined_List.begin() + tempLocal );
+                    Defined_Symbol tempDS;
+                    tempDS.original_symbol = tempDF.functionName;
+                    tempDS.type = 2;
+                    tempDS.translate_PL_Tree = ReturnASpecificTree( SYMBOL );
+                    tempDS.translate_PL_Tree->isAtomString.changed = tempDF.functionName;
+                    uDefined_List.push_back( tempDS );
+
+                    tempLocal = -1;
+                    for ( int i = 0; i < uDefined_Function_List.size() ; i++ ) {
+                      if ( tempDF.functionName == uDefined_Function_List[i].functionName )
+                        tempLocal = i;
+                    } // end for ...
+
+                    if ( tempLocal == -1 )
+                      uDefined_Function_List.push_back( tempDF );
+                    else {
+                      uDefined_Function_List.erase( uDefined_Function_List.begin() + tempLocal );
+                      uDefined_Function_List.push_back( tempDF );
+                    } // end else ...
+                  } // end if ...
+                  else {
+                    Defined_Symbol tempDS;
+                    tempDS.original_symbol = tempDF.functionName;
+                    tempDS.type = 2;
+                    tempDS.translate_PL_Tree = ReturnASpecificTree( SYMBOL );
+                    tempDS.translate_PL_Tree->isAtomString.changed = tempDF.functionName;
+                    uDefined_List.push_back( tempDS );
+                    uDefined_Function_List.push_back( tempDF );
+                  } // end else ...
+
+                  cout << tempDF.functionName << " defined";
+                } // end else
+
+                return NULL;
+              } // end if ...
+              // ================================ define ================================
+              else if ( internalFunction == "cond" ) {
+                argumentNum = HowManyArgument( originalRoot ) - 1;
+                if ( CheckTheNumOfFunctionCorrect( internalFunction, argumentNum ) ) {
+                  otherArgument = originalRoot->right;
+
+                  while ( otherArgument != NULL ) {
+                    if ( HowManyArgument( otherArgument->left ) < 2 ) {
+                      uErrorTree = originalRoot;
+                      throw ERROR_COND_FORMAT;
+                    } // end if ...
+
+                    otherArgument = otherArgument->right;
+                  } // end while ...
+
+                  otherArgument = originalRoot->right;
+                  PL_Tree *tempPLT;
+                  while ( otherArgument != NULL ) {
+                    tempPLT = otherArgument;
+                    if ( HowManyArgument( tempPLT->left ) >= 2 ) {
+                      tempPLT = tempPLT->left;
+
+                      if ( otherArgument->right == NULL ) {
+                        if ( tempPLT->left->isAtomString.changed == "else" ) {
+                          while ( tempPLT->right != NULL ) tempPLT = tempPLT->right;
+                          return Eval( tempPLT->left, 2, ifQuote );
+                        } // end if ...
+                        else if ( Eval( tempPLT->left, 2, ifQuote )->isAtomString.type != NIL ) {
+                          while ( tempPLT->right != NULL ) {
+                            tempPLT = tempPLT->right;
+                            Eval( tempPLT->left, 2, ifQuote );
+                          } // end while ...
+
+                          return Eval( tempPLT->left, 2, ifQuote );
+                        } // end else if ...
+                        else {
+                          uErrorTree = originalRoot;
+                          throw ERROR_NO_RETURN_VALUE;
+                        } // end else ...
+                      } // end if ...
+                      else if ( Eval( tempPLT->left, 2, ifQuote )->isAtomString.type != NIL ) {
+                        while ( tempPLT->right != NULL ) {
+                          tempPLT = tempPLT->right;
+                          Eval( tempPLT->left, 2, ifQuote );
+                        } // end while ...
+
+                        return Eval( tempPLT->left, 2, ifQuote );
+                      } // end else if ...
+                    } // end if ...
+                    else {
+                      uErrorTree = originalRoot;
+                      throw ERROR_COND_FORMAT;
+                    } // end else ...
+
+                    otherArgument = otherArgument->right;
+                  } // end while
+
+                  uErrorTree = originalRoot;
+                  throw ERROR_COND_FORMAT;
+                } // end if ...
+                else {
+                  uErrorTree = originalRoot;
+                  throw ERROR_COND_FORMAT;
+                } // end else ...
+
+              } // end else if ...
+              else if ( internalFunction == "lambda" ) {
+                if ( !uLambdaUse ) {
+                  argumentNum = HowManyArgument( originalRoot ) - 1;
+                  if ( argumentNum < 2 ) {
+                    uErrorTree = originalRoot;
+                    throw ERROR_LAMBDA_FORMAT;
+                  } // end if ...
+
+                  otherArgument = originalRoot->right;
+
+                  if ( otherArgument->left->isAtomString.type == NIL ) {
+                    Lambda_Function lF;
+                    uLambdaArgumentName.clear();
+                    uLambdaArgumentNum = 0;
+                    lF.lambdaArgumentName.clear();
+                    lF.lambdaArgumentNum = 0;
+                    while ( otherArgument->right != NULL ) otherArgument = otherArgument->right;
+                    uLambda_PL_Tree = otherArgument->left;
+                    lF.lambda_PL_Tree = otherArgument->left;
+                    uLambdaUse = true;
+                    uLambda_Function_List.push_back( lF );
+
+                    otherArgument = ReturnASpecificTree( SYMBOL );
+                    otherArgument->isAtomString.changed = "lambda";
+                    return otherArgument;
+                  } // end else if ...
+                  else if ( otherArgument->left->isAtomString.type == LEFT_PAREN ) {
+                    int tempSwitch;
+                    Lambda_Function lF;
+                    uLambdaArgumentName.clear();
+                    lF.lambdaArgumentName.clear();
+                    tempSwitch = CheckDefineFirstArgument( otherArgument->left, uLambdaArgumentName );
+                    lF.lambdaArgumentName = uLambdaArgumentName;
+                    uLambdaArgumentNum = tempSwitch;
+                    lF.lambdaArgumentNum = tempSwitch;
+                    while ( otherArgument->right != NULL ) otherArgument = otherArgument->right;
+                    uLambda_PL_Tree = otherArgument->left;
+                    lF.lambda_PL_Tree = otherArgument->left;
+                    uLambdaUse = true;
+                    uLambda_Function_List.push_back( lF );
+
+                    otherArgument = ReturnASpecificTree( SYMBOL );
+                    otherArgument->isAtomString.changed = "lambda";
+                    return otherArgument;
+                  } // end if ...
+                  else {
+                    uErrorTree = originalRoot;
+                    throw ERROR_LAMBDA_FORMAT;
+                  } // end else ...
+
+                  return NULL;
+                } // end if ...
+                else {
+                  argumentNum = HowManyArgument( originalRoot ) - 1;
+                  if ( argumentNum != uLambda_Function_List[uLambda_Function_List.size() - 1].
+                       lambdaArgumentNum ) {
+                    cout << argumentNum << "  " <<
+                      uLambda_Function_List[uLambda_Function_List.size() - 1].lambdaArgumentNum <<
+                      endl;
+                    uErrorToken.changed = "lambda expression";
+                    throw ERROR_INCORRECT_NUMBER_OF_ARGUMENTS;
+                  } // end if ...
+
+                  otherArgument = ReturnASpecificTree( SYMBOL );
+                  otherArgument->isAtomString.changed = "lambda";
+                  otherArgumentList.push_back( otherArgument );
+                  uLambdaUse = false;
+                } // end else
+              } // end else if
+              else if ( internalFunction == "let" ) {
+                argumentNum = HowManyArgument( originalRoot ) - 1;
+                if ( !CheckTheNumOfFunctionCorrect( internalFunction, argumentNum ) ) {
+                  uErrorTree = originalRoot;
+                  throw ERROR_DEFINE_FORMAT;
+                } // end if ...
+
+                otherArgument = originalRoot->right;
+                if ( otherArgument->left->isAtomString.type == NIL ) {
+                  // nothing ...
+                } // end if ...
+                else if ( otherArgument->left->isAtomString.type == LEFT_PAREN ) {
+                  otherArgument = otherArgument->left;
+                  do {
+                    CheckLetDefineArgument( otherArgument->left );
+                    otherArgument = otherArgument->right;
+                  } while ( otherArgument != NULL );
+                } // end else if ...
+                else {
+                  uErrorTree = originalRoot;
+                  throw ERROR_LET_FORMAT;
+                } // end else ...
+
+                otherArgument = originalRoot->right->right;
+                while ( otherArgument->right != NULL ) {
+                  Eval( otherArgument->left, 2, ifQuote );
+                  otherArgument = otherArgument->right;
+                } // end while ...
+
+                otherArgument = Eval( otherArgument->left, 2, ifQuote );
+                if ( uLet_Defined_Num > 0 ) {
+                  uDefined_List.erase( uDefined_List.begin(), uDefined_List.begin() + uLet_Defined_Num );
+                } // end if ...
+
+                uLet_Defined_Num = 0;
+
+                return otherArgument;
+
+                return NULL;
+              } // end else if ...
+            } // end if ...
+            else if ( internalFunction == "if" || internalFunction == "and" || internalFunction == "or" ) {
+
+              argumentNum = HowManyArgument( originalRoot ) - 1;
+
+              if ( CheckTheNumOfFunctionCorrect( internalFunction, argumentNum ) ) {
+                if ( internalFunction == "if" ) {
+                  otherArgument = originalRoot->right;
+                  PL_Tree *tempTT = NULL;
+
+                  tempTT = Eval( otherArgument->left, level + 1, ifQuote );
+
+                  if ( tempTT->isAtomString.type != NIL ) {
+                    otherArgument = otherArgument->right;
+                    return Eval( otherArgument->left, level + 2, ifQuote );
+                  } // end if ...
+                  else {
+                    if ( argumentNum == 3 ) {
+                      otherArgument = otherArgument->right->right;
+                      return Eval( otherArgument->left, level + 3, ifQuote );
+                    } // end if ...
+                    else {
+                      uErrorTree = originalRoot;
+                      throw ERROR_NO_RETURN_VALUE;
+                    } // end else ...
+                  } // end else ...
+                } // end if ...
+                else if ( internalFunction == "and" ) {
+                  otherArgument = originalRoot->right;
+                  PL_Tree *tempTT = NULL;
+
+                  bool continuteOtherArgumentList = true;
+                  do {
+                    level = level + 1;
+                    tempTT = Eval( otherArgument->left, level, ifQuote );
+
+                    if ( tempTT->isAtomString.type == NIL ) return ReturnASpecificTree( NIL );
+
+                    if ( otherArgument->right != NULL ) {
+                      otherArgument = otherArgument->right;
+                    } // end if ...
+                    else continuteOtherArgumentList = false;
+                  } while ( continuteOtherArgumentList );
+
+                  return Eval( otherArgument->left, level, ifQuote );
+                } // end else if ...
+                else if ( internalFunction == "or" ) {
+                  otherArgument = originalRoot->right;
+                  PL_Tree *tempTT = NULL;
+
+                  bool continuteOtherArgumentList = true;
+                  do {
+                    level = level + 1;
+                    tempTT = Eval( otherArgument->left, level, ifQuote );
+
+                    if ( tempTT->isAtomString.type != NIL ) return tempTT;
+
+                    if ( otherArgument->right != NULL ) {
+                      otherArgument = otherArgument->right;
+                    } // end if ...
+                    else continuteOtherArgumentList = false;
+                  } while ( continuteOtherArgumentList );
+
+                  return Eval( otherArgument->left, level, ifQuote );
+                } // end else if ...
+              } // end if ...
+              else {
+                uErrorToken.changed = internalFunction;
+                throw ERROR_INCORRECT_NUMBER_OF_ARGUMENTS;
+              } // end else ...
+            } // end else if ...
+            else if ( internalFunction == "quote" ) {
+              argumentNum = HowManyArgument( originalRoot ) - 1;
+              if ( CheckTheNumOfFunctionCorrect( internalFunction, argumentNum ) ) {
+                otherArgument = originalRoot->right;
+                ifQuote = true;
+                return otherArgument->left;
+              } // end if ...
+              else {
+                uErrorToken.changed = internalFunction;
+                throw ERROR_INCORRECT_NUMBER_OF_ARGUMENTS;
+              } // end else ...
+            } // end else if ...
+            else {
+              // SYM is a known function name 'abc', which is neither
+              // 'define' nor 'let' nor 'cond' nor 'lambda'
+              argumentNum = HowManyArgument( originalRoot ) - 1;
+              if ( uDebug2 ) cout << "SYM is a known function name 'abc', which is neither" << endl;
+
+              if ( CheckTheNumOfFunctionCorrect( internalFunction, argumentNum ) ) {
+                otherArgument = new PL_Tree;
+                otherArgument->parent = NULL;
+                otherArgument->left = NULL;
+                otherArgument->right = NULL;
+                otherArgument->type = SYMBOL;
+                otherArgument->isAtomString.changed = internalFunction;
+                otherArgumentList.push_back( otherArgument );
+                if ( uDebug2 ) cout << "checkTheNumOfFunctionCorrect is over\n" << endl;
+              } // end if ...
+              else {
+                uErrorToken.changed = internalFunction;
+                throw ERROR_INCORRECT_NUMBER_OF_ARGUMENTS;
+              } // end else ...
+            } // end else ...
+          } // end if ...
+          else {
+            // SYM is 'abc', which is not the name of a known function
+            if ( uDefined_List[tempLocal].type == 2 ) {
+              FunctionLocal( uDefined_List[tempLocal].original_symbol, tempLocal );
+              argumentNum = HowManyArgument( originalRoot ) - 1;
+
+              if ( argumentNum == uDefined_Function_List[tempLocal].numOfArgument ) {
+                otherArgument = ReturnASpecificTree( SYMBOL );
+                otherArgument->isAtomString.changed = uDefined_Function_List[tempLocal].functionName;
+                otherArgumentList.push_back( otherArgument );
+                useDefinedFunction = true;
+              } // end if ...
+              else {
+                uErrorToken.changed = uDefined_Function_List[tempLocal].functionName;
+                throw ERROR_INCORRECT_NUMBER_OF_ARGUMENTS;
+              } // end else ...
+            } // end if ...
+            else {
+              uErrorToken = uDefined_List[tempLocal].translate_PL_Tree->isAtomString;
+              throw ERROR_ATTEMPT_TO_APPLY_NON_FUNCTION;
+            } // end else ...
+          } // end else ...
+        } // end if ...
+        else {
+          // SYM is 'abc', which is not the name of a bound function
+          uErrorToken = originalRoot->left->isAtomString;
+          throw ERROR_UNBOUND_SYMBOY;
+        } // end else ...
+      } // end else if
+      else {
+        // the first argument of ( ... ) is ( 。。。 ), i.e., it is ( ( 。。。 ) ...... )
+        otherArgumentList.push_back( Eval( originalRoot->left, level, ifQuote ) );
+
+        if ( IsBoundOrInternalFunction( otherArgumentList[0]->isAtomString.changed, tempLocal,
+                                        internalFunction, level, ifQuote ) ) {
+          argumentNum = HowManyArgument( originalRoot ) - 1;
+          if ( !CheckTheNumOfFunctionCorrect( otherArgumentList[0]->isAtomString.changed, argumentNum ) ) {
+            uErrorToken.changed = otherArgumentList[0]->isAtomString.changed;
+
+            if ( uDebug3 ) {
+              cout << "ERROR_INCORRECT_NUMBER_OF_ARGUMENTS 1\n";
+              cout << uLambdaUse << endl;
+              cout << argumentNum << endl;
+              cout << uLambda_Function_List[uLambda_Function_List.size() - 1].lambdaArgumentNum <<
+                endl;
+            } // end if ...
+
+            throw ERROR_INCORRECT_NUMBER_OF_ARGUMENTS;
+          } // end if ...
+        } // end if ...
+        else {
+          if ( otherArgumentList[0]->isAtomString.type >= INT &&
+               otherArgumentList[0]->isAtomString.type <= T ) {
+            uErrorToken.changed = otherArgumentList[0]->isAtomString.changed;
+            throw ERROR_ATTEMPT_TO_APPLY_NON_FUNCTION;
+          } // end if ...
+          else {
+            uErrorTree = otherArgumentList[0];
+            throw ERROR_ATTEMPT_TO_APPLY_NON_FUNCTION2;
+          } // end else ...
+        } // end else
+      } // end else ...
+    } // end if ...
+
+    if ( originalRoot->right != NULL ) {
+      otherArgument = originalRoot->right;
+      PL_Tree *tempTT = NULL;
+
+      bool continuteOtherArgumentList = true;
+      do {
+        level = level + 1;
+        uLambdaUse = false;
+        if ( useDefinedFunction ) tempTT = otherArgument->left;
+        else tempTT = Eval( otherArgument->left, level, ifQuote );
+
+        otherArgumentList.push_back( tempTT );
+        if ( otherArgument->right != NULL ) {
+          otherArgument = otherArgument->right;
+        } // end if ...
+        else continuteOtherArgumentList = false;
+      } while ( continuteOtherArgumentList );
+    } // end if ...
+
+    if ( otherArgumentList.size() > 0 ) {
+      string firstArgument;
+      firstArgument = otherArgumentList[0]->isAtomString.changed;
+
+      if ( useDefinedFunction ) {
+        PL_Tree *temp = CopyTree( uDefined_Function_List[tempLocal].translate_PL_Tree );
+        ReplaceArgumentInFunction( otherArgumentList, tempLocal, temp, argumentNum );
+
+        return Eval( temp, level, ifQuote );
+      } // end if ...
+      else if ( firstArgument == "lambda" ) {
+        PL_Tree *temp = CopyTree( uLambda_Function_List[uLambda_Function_List.size() - 1].
+                                  lambda_PL_Tree );
+        ReplaceArgumentInLambda( otherArgumentList, temp, argumentNum );
+        uLambdaUse = false;
+        uLambda_Function_List.pop_back();
+
+        return Eval( temp, level, ifQuote );
+      } // end if ...
+      else if ( firstArgument == "clean-environment" ) {
+        CleanEnvironment();
+        cout << "environment cleaned";
+        return NULL;
+      } // end if ...
+      else if ( firstArgument == "cons" ) {
+        otherArgument = new PL_Tree;
+        otherArgument->parent = NULL;
+        otherArgument->left = otherArgumentList[1];
+
+        if ( otherArgumentList[2] == NULL ) otherArgument->right = NULL;
+        else if ( otherArgumentList[2]->type == LEFT_PAREN ) {
+          PL_Tree *temp = CopyTree( otherArgumentList[2] );
+          temp->type = S_EXP;
+          otherArgument->right = temp;
+        } // end else if ...
+        else {
+          otherArgument->right = otherArgumentList[2];
+        } // end else ...
+
+        otherArgument->type = LEFT_PAREN;
+        otherArgument->isAtomString.type = LEFT_PAREN;
+        otherArgument->isAtomString.changed = "(";
+
+
+        return otherArgument;
+      } // end else if ...
+      else if ( firstArgument == "list" ) {
+
+        if ( otherArgumentList.size() == 1 )
+          return ReturnASpecificTree( NIL );
+
+        otherArgument = new PL_Tree;
+        otherArgument->parent = NULL;
+        otherArgument->left = otherArgumentList[1];
+        otherArgument->type = LEFT_PAREN;
+        otherArgument->isAtomString.changed = "(";
+        otherArgument->isAtomString.type = LEFT_PAREN;
+
+        PL_Tree *root = otherArgument;
+        for ( int i = 2 ; i < otherArgumentList.size() ; i++ ) {
+          otherArgument->right = new PL_Tree;
+          otherArgument->right->parent = otherArgument;
+          otherArgument = otherArgument->right;
+          otherArgument->type = S_EXP;
+          otherArgument->left = otherArgumentList[i];
+        } // end for ...
+
+        otherArgument->right = NULL;
+        return root;
+      } // end else if ...
+      else if ( firstArgument == "quote" ) {
+
+        return otherArgumentList[1];
+
+      } // end else if ...
+      else if ( firstArgument == "car" ) {
+
+        if ( otherArgumentList[1]->type == ATOM ||
+             otherArgumentList[1]->type == SYMBOL ) {
+          uErrorToken.changed = "car";
+          uErrorTree = otherArgumentList[1];
+          throw ERROR_XXX_WITH_INCORRECT_ARGUMENT_TYPE;
+        } // end if
+
+        return otherArgumentList[1]->left;
+
+      } // end else if ...
+      else if ( firstArgument == "cdr" ) {
+
+        if ( otherArgumentList[1]->type == ATOM ||
+             otherArgumentList[1]->type == SYMBOL ) {
+          uErrorToken.changed = "cdr";
+          uErrorTree = otherArgumentList[1];
+          throw ERROR_XXX_WITH_INCORRECT_ARGUMENT_TYPE;
+        } // end if
+
+        if ( otherArgumentList[1]->right == NULL ) return NULL;
+
+        if ( otherArgumentList[1]->right->type == S_EXP ||
+             otherArgumentList[1]->right->type == LS_EXP ) {
+          PL_Tree *temp = CopyTree( otherArgumentList[1]->right );
+          temp->type = LEFT_PAREN;
+          temp->isAtomString.type = LEFT_PAREN;
+          temp->isAtomString.changed = "(";
+          return temp;
+        } // end if ...
+        else {
+          return otherArgumentList[1]->right;
+        } // end else ...
+
+      } // end else if ...
+      else if ( firstArgument == "atom?" ) {
+
+        if ( otherArgumentList[1]->type == ATOM ) return ReturnASpecificTree( T );
+        else return ReturnASpecificTree( NIL );
+
+      } // end else if ...
+      else if ( firstArgument == "pair?" ) {
+
+        if ( otherArgumentList[1]->type == ATOM ) return ReturnASpecificTree( NIL );
+        else return ReturnASpecificTree( T );
+
+      } // end else if ...
+      else if ( firstArgument == "list?" ) {
+
+        if ( IsList( otherArgumentList[1] ) ) return ReturnASpecificTree( T );
+        else return ReturnASpecificTree( NIL );
+
+      } // end else if ...
+      else if ( firstArgument == "null?" ) {
+
+        if ( otherArgumentList[1]->isAtomString.type == NIL ) return ReturnASpecificTree( T );
+        else return ReturnASpecificTree( NIL );
+
+      } // end else if ...
+      else if ( firstArgument == "integer?" ) {
+
+        if ( otherArgumentList[1]->isAtomString.type == INT ) return ReturnASpecificTree( T );
+        else return ReturnASpecificTree( NIL );
+
+      } // end else if ...
+      else if ( firstArgument == "real?" ) {
+
+        if ( otherArgumentList[1]->isAtomString.type == INT ||
+             otherArgumentList[1]->isAtomString.type == FLOAT ) return ReturnASpecificTree( T );
+        else return ReturnASpecificTree( NIL );
+
+      } // end else if ...
+      else if ( firstArgument == "number?" ) {
+
+        if ( otherArgumentList[1]->isAtomString.type == INT ||
+             otherArgumentList[1]->isAtomString.type == FLOAT ) return ReturnASpecificTree( T );
+        else return ReturnASpecificTree( NIL );
+
+      } // end else if ...
+      else if ( firstArgument == "string?" ) {
+
+        if ( otherArgumentList[1]->isAtomString.type == STRING ) return ReturnASpecificTree( T );
+        else return ReturnASpecificTree( NIL );
+
+      } // end else if ...
+      else if ( firstArgument == "boolean?" ) {
+
+        if ( otherArgumentList[1]->isAtomString.type == NIL ||
+             otherArgumentList[1]->isAtomString.type == T ) return ReturnASpecificTree( T );
+        else return ReturnASpecificTree( NIL );
+
+      } // end else if ...
+      else if ( firstArgument == "symbol?" ) {
+
+        if ( otherArgumentList[1]->isAtomString.type == SYMBOL ) return ReturnASpecificTree( T );
+        else return ReturnASpecificTree( NIL );
+
+      } // end else if ...
+      else if ( firstArgument == "+" || firstArgument == "-" || firstArgument == "*" ||
+                firstArgument == "/" ) {
+
+        bool ifEverFloat = false;
+        int firstI = 0;
+        int secondI = 0;
+        float firstF = 0;
+        float secondF = 0;
+
+        for ( int i = 1; i < otherArgumentList.size() ; i++ ) {
+
+          if ( otherArgumentList[i]->isAtomString.type != INT &&
+               otherArgumentList[i]->isAtomString.type != FLOAT ) {
+            uErrorToken.changed = firstArgument;
+            uErrorTree = otherArgumentList[i];
+            throw ERROR_XXX_WITH_INCORRECT_ARGUMENT_TYPE;
+          } // end if ...
+
+          if ( ifEverFloat ) {
+            sscanf( otherArgumentList[i]->isAtomString.changed.c_str(), "%f", &secondF );
+            if ( firstArgument == "+" ) firstF = firstF + secondF;
+            else if ( firstArgument == "-" ) firstF = firstF - secondF;
+            else if ( firstArgument == "*" ) firstF = firstF * secondF;
+            else if ( firstArgument == "/" ) {
+              if ( secondF == 0 ) throw ERROR_DIVISION_BY_ZERO;
+              firstF = firstF / secondF;
+            } // end else if ...
+          } // end if ...
+          else {
+            if ( otherArgumentList[i]->isAtomString.type == FLOAT ) {
+              ifEverFloat = true;
+              firstF = firstI;
+              sscanf( otherArgumentList[i]->isAtomString.changed.c_str(), "%f", &secondF );
+              if ( i == 1 ) {
+                firstF = secondF;
+              } // end if ...
+              else {
+                if ( firstArgument == "+" ) firstF = firstF + secondF;
+                else if ( firstArgument == "-" ) firstF = firstF - secondF;
+                else if ( firstArgument == "*" ) firstF = firstF * secondF;
+                else if ( firstArgument == "/" ) {
+                  if ( secondF == 0 ) throw ERROR_DIVISION_BY_ZERO;
+                  firstF = firstF / secondF;
+                } // end else if ...
+              } // else ...
+            } // end if ...
+            else {
+              sscanf( otherArgumentList[i]->isAtomString.changed.c_str(), "%d", &secondI );
+              if ( i == 1 ) {
+                firstI = secondI;
+              } // end if ...
+              else {
+                if ( firstArgument == "+" ) firstI = firstI + secondI;
+                else if ( firstArgument == "-" ) firstI = firstI - secondI;
+                else if ( firstArgument == "*" ) firstI = firstI * secondI;
+                else if ( firstArgument == "/" ) {
+                  if ( secondI == 0 ) throw ERROR_DIVISION_BY_ZERO;
+                  firstI = firstI / secondI;
+                } // end else if ...
+              } // end else ...
+            } // end else ...
+          } // end else ...
+        } // end for ...
+
+        char *cs = new char[64];
+        if ( ifEverFloat ) {
+          otherArgument = ReturnASpecificTree( FLOAT );
+          sprintf( cs, "%.3f", firstF );
+        } // end if ...
+        else {
+          otherArgument = ReturnASpecificTree( INT );
+          sprintf( cs, "%d", firstI );
+        } // end else ...
+
+        otherArgument->isAtomString.changed = cs;
+
+        return otherArgument;
+
+      } // end else if ...
+      else if ( firstArgument == "not" ) {
+
+        if ( otherArgumentList[1]->isAtomString.type == NIL ) return ReturnASpecificTree( T );
+        else return ReturnASpecificTree( NIL );
+
+      } // end else if ...
+      /*
+      else if ( firstArgument == "and" ) {
+
+        for ( int i = 1; i < otherArgumentList.size() - 1 ; i++ ) {
+          if ( otherArgumentList[i]->isAtomString.type == NIL ) return otherArgumentList[i];
+        } // end for ...
+
+        return otherArgumentList[otherArgumentList.size() - 1];
+
+      } // end else if ...
+      else if ( firstArgument == "or" ) {
+
+        if ( otherArgumentList[1]->isAtomString.type != NIL ) return otherArgumentList[1];
+        else return otherArgumentList[otherArgumentList.size() - 1];
+
+      } // end else if ...
+      */
+      else if ( firstArgument == ">" || firstArgument == ">=" || firstArgument == "<" ||
+                firstArgument == "<=" || firstArgument == "=" ) {
+
+        for ( int i = 1; i < otherArgumentList.size() ; i++ ) {
+          if ( otherArgumentList[i]->isAtomString.type != INT &&
+               otherArgumentList[i]->isAtomString.type != FLOAT ) {
+            uErrorToken.changed = firstArgument;
+            uErrorTree = otherArgumentList[i];
+            throw ERROR_XXX_WITH_INCORRECT_ARGUMENT_TYPE;
+          } // end if ...
+        } // end for ...
+
+        float firstF = 0;
+        float secondF = 0;
+
+        for ( int i = 2; i < otherArgumentList.size() ; i++ ) {
+
+          sscanf( otherArgumentList[i - 1]->isAtomString.changed.c_str(), "%f", &firstF );
+          sscanf( otherArgumentList[i]->isAtomString.changed.c_str(), "%f", &secondF );
+
+          if ( firstArgument == ">" ) {
+            if ( uDebug2 ) cout << "L1379 : enter >\n";
+            if ( firstF <= secondF ) return ReturnASpecificTree( NIL );
+          } // end if ...
+          else if ( firstArgument == ">=" ) {
+            if ( firstF < secondF ) return ReturnASpecificTree( NIL );
+          } // end else if ...
+          else if ( firstArgument == "<" ) {
+            if ( firstF >= secondF ) return ReturnASpecificTree( NIL );
+          } // end else if ...
+          else if ( firstArgument == "<=" ) {
+            if ( firstF > secondF ) return ReturnASpecificTree( NIL );
+          } // end else if ...
+          else if ( firstArgument == "=" ) {
+            if ( firstF != secondF ) return ReturnASpecificTree( NIL );
+          } // end else if ...
+        } // end for ...
+
+        return ReturnASpecificTree( T );
+
+      } // end else if ...
+      else if ( firstArgument == "string-append" ) {
+
+        for ( int i = 1; i < otherArgumentList.size() ; i++ ) {
+          if ( otherArgumentList[i]->isAtomString.type != STRING ) {
+            uErrorToken.changed = firstArgument;
+            uErrorTree = otherArgumentList[i];
+            throw ERROR_XXX_WITH_INCORRECT_ARGUMENT_TYPE;
+          } // end if ...
+        } // end for ...
+
+        string temp = "";
+        string temp2 = "";
+        for ( int i = 1; i < otherArgumentList.size() ; i++ ) {
+          temp2 = otherArgumentList[i]->isAtomString.changed;
+          temp2.erase( temp2.begin() );
+          temp2.erase( temp2.end() - 1 );
+          temp = temp + temp2;
+        } // end for ...
+
+        temp.insert( 0, "\"" );
+        temp.insert( temp.length(), "\"" );
+
+        otherArgument = NULL;
+        otherArgument = ReturnASpecificTree( STRING );
+        otherArgument->isAtomString.changed = temp;
+
+        return otherArgument;
+
+      } // end else if ...
+      else if ( firstArgument == "string>?" || firstArgument == "string<?" || firstArgument == "string=?" ) {
+
+        for ( int i = 1; i < otherArgumentList.size() ; i++ ) {
+          if ( otherArgumentList[i]->isAtomString.type != STRING ) {
+            uErrorToken.changed = firstArgument;
+            uErrorTree = otherArgumentList[i];
+            throw ERROR_XXX_WITH_INCORRECT_ARGUMENT_TYPE;
+          } // end if ...
+        } // end for ...
+
+        string firstS;
+        string secondS;
+
+        for ( int i = 2; i < otherArgumentList.size() ; i++ ) {
+
+          firstS = otherArgumentList[i - 1]->isAtomString.changed;
+          secondS = otherArgumentList[i]->isAtomString.changed;
+
+          if ( firstArgument == "string>?" ) {
+            if ( firstS <= secondS )
+              return ReturnASpecificTree( NIL );
+          } // end if ...
+          else if ( firstArgument == "string<?" ) {
+            if ( firstS >= secondS )
+              return ReturnASpecificTree( NIL );
+          } // end else if ...
+          else if ( firstArgument == "string=?" ) {
+            if ( firstS != secondS )
+              return ReturnASpecificTree( NIL );
+          } // end else if ...
+
+        } // end for ...
+
+        return ReturnASpecificTree( T );
+
+      } // end else if ...
+      else if ( firstArgument == "eqv?" ) {
+
+        if ( uDebug2 ) cout << "L1941 : enter eqv?\n";
+
+        if ( IsEqv( otherArgumentList[1], otherArgumentList[2] ) ) return ReturnASpecificTree( T );
+        else return ReturnASpecificTree( NIL );
+
+      } // end else if ...
+      else if ( firstArgument == "equal?" ) {
+
+        if ( uDebug2 ) cout << "L1494 : enter equal?\n";
+
+        if ( IsEqual( otherArgumentList[1], otherArgumentList[2] ) ) return ReturnASpecificTree( T );
+        else return ReturnASpecificTree( NIL );
+
+      } // end else if ...
+      else if ( firstArgument == "begin" ) {
+
+        return otherArgumentList[otherArgumentList.size() - 1];
+
+      } // end else if ...
+      /*
+      else if ( firstArgument == "if" ) {
+
+        if ( otherArgumentList[1]->isAtomString.type != NIL ) return otherArgumentList[2];
+        else {
+          if ( otherArgumentList.size() < 4 ) {
+            uErrorTree = originalRoot;
+            throw ERROR_NO_RETURN_VALUE;
+          } // end if ...
+          else return otherArgumentList[3];
+        } // end else ...
+
+      } // end else if ...
+      */
+    } // end if ...
+
+  } // end else ...
+
+  return NULL;
+} // Eval()
+
+void InputInternalFunction() {
+
+  uInternalFunction.clear();
+
+  uInternalFunction.push_back( "cons" );
+  uInternalFunction.push_back( "list" );
+  uInternalFunction.push_back( "quote" );
+  uInternalFunction.push_back( "'" );
+  uInternalFunction.push_back( "define" );
+  uInternalFunction.push_back( "lambda" );
+  uInternalFunction.push_back( "let" );
+  uInternalFunction.push_back( "car" );
+  uInternalFunction.push_back( "cdr" );
+  uInternalFunction.push_back( "atom?" );
+  uInternalFunction.push_back( "pair?" );
+  uInternalFunction.push_back( "list?" );
+  uInternalFunction.push_back( "null?" );
+  uInternalFunction.push_back( "integer?" );
+  uInternalFunction.push_back( "real?" );
+  uInternalFunction.push_back( "number?" );
+  uInternalFunction.push_back( "string?" );
+  uInternalFunction.push_back( "boolean?" );
+  uInternalFunction.push_back( "symbol?" );
+  uInternalFunction.push_back( "+" );
+  uInternalFunction.push_back( "-" );
+  uInternalFunction.push_back( "*" );
+  uInternalFunction.push_back( "/" );
+  uInternalFunction.push_back( "not" );
+  uInternalFunction.push_back( "and" );
+  uInternalFunction.push_back( "or" );
+  uInternalFunction.push_back( ">" );
+  uInternalFunction.push_back( ">=" );
+  uInternalFunction.push_back( "<" );
+  uInternalFunction.push_back( "<=" );
+  uInternalFunction.push_back( "=" );
+  uInternalFunction.push_back( "string-append" );
+  uInternalFunction.push_back( "string>?" );
+  uInternalFunction.push_back( "string<?" );
+  uInternalFunction.push_back( "string=?" );
+  uInternalFunction.push_back( "eqv?" );
+  uInternalFunction.push_back( "equal?" );
+  uInternalFunction.push_back( "begin" );
+  uInternalFunction.push_back( "if" );
+  uInternalFunction.push_back( "cond" );
+  uInternalFunction.push_back( "clean-environment" );
+  uInternalFunction.push_back( "exit" );
+
+
+
+} // InputInternalFunction()
 
 int main()
 {
@@ -811,10 +2308,14 @@ int main()
   uIsReadSexp = false;
   uPrePrintLine = 1;
   uPrePrintSexpInSameLine = false;
+  uLet_Defined_Num = 0;
+  uLambda_Function_List.clear();
+  InputInternalFunction(); // Initialize uInternalFunction
+  CleanEnvironment();
 
-  int mTestNumber;
+  int mTestNumber; // Question No.
 
-  if ( !uDebug ) {
+  if ( !uDebug && !uDebug2 && !uDebug3 ) {
     scanf( "%d", &mTestNumber );
     GetLine();
   } // end if ...
@@ -854,43 +2355,49 @@ int main()
         cout << endl;
       } // end if ...
 
+      /*
       if ( !IsExit( mS_exp_Root ) ) PrintSExp( mS_exp_Root, 0 );
+      else cout << endl;
+      */
+      bool ifQuote = false;
+      if ( !IsExit( mS_exp_Root ) ) PrintSExp( Eval( mS_exp_Root, 1, ifQuote ), 0, ifQuote );
       else cout << endl;
 
       uPrePrintLine = uTotalLine;
       uIsReadSexp = false;
-
+      uLambdaUse = false;
+      uLambda_Function_List.clear();
     }
-    catch ( ERROR error )
+    catch ( ERROR_READ errorRead )
     {
-      if ( error == ERROR_UNEXPECTED_TOKEN_ATOM_LEFT_PAREN ) {
+      if ( errorRead == ERROR_UNEXPECTED_TOKEN_ATOM_LEFT_PAREN ) {
         cout << "ERROR (unexpected token) : atom or '(' expected when token at Line ";
         printf( "%d Column %d is >>%s<<", uErrorToken.tokenLine, uErrorToken.tokenColume,
                 uErrorToken.original.c_str() );
       } // end if ...
-      else if ( error == ERROR_UNEXPECTED_TOKEN_RIGHT_PAREN ) {
+      else if ( errorRead == ERROR_UNEXPECTED_TOKEN_RIGHT_PAREN ) {
         cout << "ERROR (unexpected token) : ')' expected when token at Line ";
         printf( "%d Column %d is >>%s<<", uErrorToken.tokenLine, uErrorToken.tokenColume,
                 uErrorToken.original.c_str() );
       } // end else if ...
-      else if ( error == ERROR_NO_CLOSING_QUOTE ) {
+      else if ( errorRead == ERROR_NO_CLOSING_QUOTE ) {
         printf( "ERROR (no closing quote) : END-OF-LINE encountered at Line %d Column %d",
                 uErrorToken.tokenLine, uErrorToken.tokenColume );
       } // end else if ...
-      else if ( error == ERROR_NO_MORE_INPUT ) {
+      else if ( errorRead == ERROR_NO_MORE_INPUT ) {
         uEOF = true;
         // cout << "ERROR_no_more_inputn";
       } // end else if ...
 
       uUnusedCharBool = false;
 
-      if ( error < ERROR_NO_CLOSING_QUOTE && uLastChar != '\n' ) {
+      if ( errorRead < ERROR_NO_CLOSING_QUOTE && uLastChar != '\n' ) {
         try
         {
           uPrePrintSexpInSameLine = false;
           GetLine();
         }
-        catch ( ERROR error )
+        catch ( ERROR_READ error )
         {
           if ( error == ERROR_NO_MORE_INPUT ) {
             uEOF = true;
@@ -900,7 +2407,72 @@ int main()
         } // end catch ...
       } // end if ...
     } // end catch ...
+    catch ( ERROR_EVAL errorEval ) {
 
+      uPrePrintLine = uTotalLine;
+      uIsReadSexp = false;
+
+      if ( errorEval == ERROR_UNBOUND_SYMBOY ) {
+        cout << "ERROR (unbound symbol) : " << uErrorToken.changed;
+      } // end if ...
+      else if ( errorEval == ERROR_NON_LIST ) {
+        cout << "ERROR (non-list) : ";
+        PrintSExp( uErrorTree, 0, true );
+      } // end else if ...
+      else if ( errorEval == ERROR_ATTEMPT_TO_APPLY_NON_FUNCTION ) {
+        cout << "ERROR (attempt to apply non-function) : " << uErrorToken.changed;
+      } // end else if ...
+      else if ( errorEval == ERROR_ATTEMPT_TO_APPLY_NON_FUNCTION2 ) {
+        cout << "ERROR (attempt to apply non-function) : ";
+        PrintSExp( uErrorTree, 0, false );
+      } // end else if ...
+      else if ( errorEval == ERROR_LEVEL_OF_CLEAN_ENVIRONMENT ) {
+        cout << "ERROR (level of CLEAN-ENVIRONMENT)";
+      } // end else if ...
+      else if ( errorEval == ERROR_LEVEL_OF_DEFINE ) {
+        cout << "ERROR (level of DEFINE)";
+      } // end else if ...
+      else if ( errorEval == ERROR_LEVEL_OF_EXIT ) {
+        cout << "ERROR (level of EXIT)";
+      } // end else if ...
+      else if ( errorEval == ERROR_INCORRECT_NUMBER_OF_ARGUMENTS ) {
+        cout << "ERROR (incorrect number of arguments) : " << uErrorToken.changed;
+      } // end else if ...
+      else if ( errorEval == ERROR_DEFINE_FORMAT ) {
+        cout << "ERROR (DEFINE format) : ";
+        PrintSExp( uErrorTree, 0, true );
+      } // end else if ...
+      else if ( errorEval == ERROR_COND_FORMAT ) {
+        cout << "ERROR (COND format) : ";
+        PrintSExp( uErrorTree, 0, true );
+      } // end else if ...
+      else if ( errorEval == ERROR_LAMBDA_FORMAT ) {
+        cout << "ERROR (LAMBDA format) : ";
+        PrintSExp( uErrorTree, 0, true );
+      } // end else if
+      else if ( errorEval == ERROR_LET_FORMAT ) {
+        cout << "ERROR (let format)";
+      } // end else if
+      else if ( errorEval == ERROR_XXX_WITH_INCORRECT_ARGUMENT_TYPE ) {
+        cout << "ERROR (" << uErrorToken.changed << " with incorrect argument type) : ";
+        PrintSExp( uErrorTree, 0, true );
+      } // end else if ERROR_DIVISION_BY_ZERO
+      else if ( errorEval == ERROR_DIVISION_BY_ZERO ) {
+        cout << "ERROR (division by zero) : /";
+      } // end else if
+      else if ( errorEval == ERROR_NO_RETURN_VALUE ) {
+        cout << "ERROR (no return value) : ";
+        PrintSExp( uErrorTree, 0, true );
+      } // end else if
+
+
+    } // end catch ...
+
+    /*
+      ERROR_UNBOUND_SYMBOY = 51, ERROR_NON_LIST, ERROR_ATTEMPT_TO_APPLY_NON_FUNCTION,
+      ERROR_LEVEL_OF_CLEAN_ENVIRONMENT, ERROR_LEVEL_OF_DEFINE, ERROR_LEVEL_OF_EXIT,
+      ERROR_INCORRECT_NUMBER_OF_ARGUMENTS
+    */
 
   } while ( !IsExit( mS_exp_Root ) && !uEOF );
 
@@ -910,4 +2482,3 @@ int main()
   // system( "pause" );
   return 0;
 } // main()
-
